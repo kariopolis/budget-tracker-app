@@ -18,9 +18,9 @@ const BT = (() => {
 
   const keyCache = new Map();
   async function deriveKey(passphrase, salt, iterations) {
-    const id = passphrase.length + ":" + b64.to(salt) + ":" + iterations;
+    const id = passphrase.normalize("NFC") + "\u0000" + b64.to(salt) + ":" + iterations;   // memory only
     if (keyCache.has(id)) return keyCache.get(id);
-    const base = await crypto.subtle.importKey("raw", enc.encode(passphrase), "PBKDF2", false, ["deriveKey"]);
+    const base = await crypto.subtle.importKey("raw", enc.encode(passphrase.normalize("NFC")), "PBKDF2", false, ["deriveKey"]);
     const key = await crypto.subtle.deriveKey({ name: "PBKDF2", hash: "SHA-256", salt, iterations },
       base, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
     keyCache.clear();
@@ -51,7 +51,10 @@ const BT = (() => {
   }
 
   function parseSetup(code) {
-    const s = String(code || "").trim().replace(/^.*#setup=/, "").replace(/-/g, "+").replace(/_/g, "/");
+    let s = String(code || "");
+    const inLink = s.match(/#setup=([\w-]+)/);
+    if (inLink) s = inLink[1];
+    s = s.replace(/[^A-Za-z0-9_\-+/=]/g, "").replace(/=+$/, "").replace(/-/g, "+").replace(/_/g, "/");
     const padded = s + "===".slice((s.length + 3) % 4);
     const obj = JSON.parse(dec.decode(b64.from(padded)));
     if (!obj.t || !obj.g) throw new Error("Not a setup code");
