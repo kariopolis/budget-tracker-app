@@ -478,6 +478,10 @@
   setInterval(() => { if (document.visibilityState === "visible") syncNow(); }, 60000);
   document.addEventListener("focusout", () => setTimeout(() => { if (S.deferred && !editing() && !sheetRoot.firstChild) { S.deferred = false; render(); } }, 50));
 
+  /* no zooming: pinch (Safari's gesture events and two-finger moves); double-tap zoom is off via CSS touch-action */
+  for (const ev of ["gesturestart", "gesturechange", "gestureend"]) document.addEventListener(ev, e => e.preventDefault(), { passive: false });
+  document.addEventListener("touchmove", e => { if (e.touches.length > 1) e.preventDefault(); }, { passive: false });
+
   if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
   render();
   syncNow();
