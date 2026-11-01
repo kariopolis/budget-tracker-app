@@ -84,29 +84,55 @@
   /* ---------- setup (first start) ---------- */
   function renderSetup(message) {
     const fromLink = (location.hash.match(/#setup=([\w-]+)/) || [])[1] || "";
-    const inSafari = fromLink && !standalone();
+    const inBrowser = fromLink && !standalone();
     app.innerHTML = `<div class="setup">
       <img class="logo" src="icon-180.png" alt="">
       <h1>Budget Tracker</h1>
       <p class="cap">Your budget from the Windows app, on your phone. Changes sync both ways, encrypted with your passphrase.</p>
-      ${inSafari ? `<div class="card" style="margin:18px 0">
-        <ol><li>Tap <b>Copy setup code</b>.</li><li>Tap <b>Share</b> → <b>Add to Home Screen</b>.</li>
-        <li>Open <b>Budget</b> from the Home Screen, paste the code and type your passphrase.</li></ol>
-        <button class="btn primary" style="width:100%" id="copy">Copy setup code</button></div>
-        <p class="cap">Or use it right here in Safari:</p>` : `<p class="cap" style="margin-top:14px">In the Windows app: Settings → iPhone app → Set up, then scan the QR code (Quick Response code).</p>`}
+      ${inBrowser ? `<div class="card" style="margin:18px 0">
+        <p style="margin:0 0 10px"><b>Put Budget on your Home Screen</b></p>
+        <p class="help" style="margin:0 0 10px">Only Safari can do this. In Brave or Chrome, tap Open in Safari first.</p>
+        <a class="btn" style="display:block;text-align:center;text-decoration:none;margin-bottom:14px" href="x-safari-${h(location.href)}">Open in Safari</a>
+        <ol><li>In Safari tap <b>Share</b> → <b>Add to Home Screen</b> → <b>Add</b>.</li>
+        <li>Open <b>Budget</b> from the Home Screen. The setup code is already filled in there: just type your passphrase.</li></ol>
+        <p class="help" style="margin:0 0 10px">Code not filled in on the Home Screen app? Tap Copy setup code here, then Paste setup code there.</p>
+        <button class="btn" style="width:100%" id="copy">Copy setup code</button></div>
+        <p class="cap">Or use it right here in the browser:</p>` : `<p class="cap" style="margin-top:14px">In the Windows app: Settings → Show QR code (Quick Response code). Open it in Safari, tap Copy setup code, then paste it here.</p>`}
+      ${!fromLink ? `<button class="btn primary" style="width:100%;margin-bottom:14px" id="paste">Paste setup code</button>` : ""}
       <div class="field"><label class="label" for="code">Setup code</label>
-        <textarea class="input" id="code" placeholder="Paste the setup code">${h(fromLink)}</textarea></div>
+        <textarea class="input" id="code" placeholder="Paste the setup code" autocapitalize="off" autocorrect="off" spellcheck="false">${h(fromLink)}</textarea></div>
       <div class="field"><label class="label" for="pass">Passphrase</label>
-        <input class="input" id="pass" type="password" autocomplete="current-password" placeholder="The one you chose in the Windows app"></div>
+        <input class="input" id="pass" type="password" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="The one you chose in the Windows app">
+        <label class="help" style="display:flex;align-items:center;gap:8px;margin-top:8px"><input type="checkbox" id="show"> Show passphrase</label></div>
       ${message ? `<p class="error">${h(message)}</p>` : `<p class="error" id="err"></p>`}
       <button class="btn primary" style="width:100%" id="go">Connect</button>
     </div>`;
     const copy = document.getElementById("copy");
     if (copy) copy.onclick = async () => {
-      try { await navigator.clipboard.writeText(fromLink); toast("Setup code copied"); }
+      try { await navigator.clipboard.writeText(fromLink); toast("Setup code copied - now Share → Add to Home Screen"); }
       catch (e) { document.getElementById("code").select(); toast("Select the code and copy it"); }
     };
+    const paste = document.getElementById("paste");
+    if (paste) paste.onclick = async () => {
+      try {
+        const text = await navigator.clipboard.readText();
+        document.getElementById("code").value = text;
+        const err = document.querySelector(".setup .error");
+        err.textContent = setupProblem(text);
+        if (!err.textContent) document.getElementById("pass").focus();
+      } catch (e) { document.getElementById("code").focus(); toast("Tap the box, then Paste"); }
+    };
+    document.getElementById("show").onchange = e => { document.getElementById("pass").type = e.target.checked ? "text" : "password"; };
     document.getElementById("go").onclick = connect;
+  }
+
+  function setupProblem(text) {
+    try { BT.parseSetup(text); return ""; } catch (e) { /* explained below */ }
+    const t = String(text || "").trim();
+    if (!t) return "The clipboard is empty. Open the QR code link in Safari and tap Copy setup code.";
+    if (/github\.io|https?:\/\//i.test(t)) return "That is the app's address, not the setup code. Open the QR code link in Safari, " +
+      "tap Copy setup code, and paste here without copying anything else in between.";
+    return "That isn't the whole setup code. Open the QR code link in Safari and tap Copy setup code again.";
   }
 
   async function connect() {
@@ -114,7 +140,7 @@
     const btn = document.getElementById("go");
     const code = document.getElementById("code").value, pass = document.getElementById("pass").value;
     let setup;
-    try { setup = BT.parseSetup(code); } catch (e) { err.textContent = "That setup code doesn't look right. Copy it again."; return; }
+    try { setup = BT.parseSetup(code); } catch (e) { err.textContent = setupProblem(code); return; }
     if (!pass) { err.textContent = "Type your passphrase."; return; }
     btn.disabled = true; btn.textContent = "Connecting...";
     try {
@@ -123,11 +149,15 @@
       store.set("creds", S.creds);
       S.snapshot = r.snapshot; S.pending = []; S.lastSync = new Date().toISOString(); S.error = "";
       save();
-      history.replaceState(null, "", location.pathname);
       render();
       toast(r.snapshot ? "Connected" : "Connected - waiting for the Windows app to send your data");
     } catch (e) {
-      err.textContent = e instanceof BT.WrongPassphrase ? "Wrong passphrase." : (e.message || "Could not connect.");
+      err.textContent = e instanceof BT.WrongPassphrase
+        ? "Wrong passphrase. It must be exactly the one in the Windows app's Settings - capital letters and spaces count. Tick Show passphrase to check it."
+        : e.status === 401 ? "GitHub refused the access token in this setup code. In the Windows app press Show QR code again and use the new code."
+          : e.status === 404 ? "The sync data was not found on GitHub. In the Windows app press Show QR code again."
+            : e.status ? `GitHub said: ${e.message}`
+              : `No connection to GitHub (${e.message || e.name}). Check the internet connection and try again.`;
       btn.disabled = false; btn.textContent = "Connect";
     }
   }
