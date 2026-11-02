@@ -187,6 +187,7 @@
       </header>
       <main>
         ${heroCard(tot, scope, ms.length)}
+        ${balancesCard(scope || ms[ms.length - 1])}
         ${categoriesCard(all, scope)}
         <section class="card"><h2>Payments<span class="hint" id="count"></span></h2>
           <div class="search"><input id="q" type="search" placeholder="Search place or description" value="${h(S.q)}" autocomplete="off"></div>
@@ -211,6 +212,19 @@
       </div>
       <div class="flow">${flow}</div>
       <div class="legend">${legend.map(([n, v, c]) => `<div><i style="background:${c}"></i>${n}<b>${BT.money(v)}</b></div>`).join("")}</div>
+    </section>`;
+  }
+
+  function balancesCard(ym) {
+    const b = ym && BT.balancesFor(S.snapshot, S.pending, ym);
+    if (!b) return "";
+    const known = b.accounts.filter(a => b.row[a] != null);
+    const total = known.reduce((s, a) => s + b.row[a], 0);
+    const colors = { Cash: "var(--spent)", Savings: "var(--saved)", Investments: "var(--invested)" };
+    return `<section class="card"><h2>You have<span class="hint">end of ${MONTHS[Number(ym.slice(5)) - 1]}</span></h2>
+      <div class="big ${total < 0 ? "neg" : ""}" style="margin-bottom:12px">${known.length ? BT.money(total) : "—"}</div>
+      <div class="legend">${b.accounts.map(a => `<div><i style="background:${colors[a] || "var(--spruce)"}"></i>${h(a)}<b style="${b.row[a] == null ? "color:var(--muted);font-weight:400" : ""}">${b.row[a] == null ? "not set" : BT.money(b.row[a])}</b></div>`).join("")}</div>
+      ${b.accounts.some(a => b.row[a] == null) ? `<p class="help">Set cash, savings and investments in the Windows app: Balances.</p>` : ""}
     </section>`;
   }
 
