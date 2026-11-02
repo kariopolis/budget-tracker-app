@@ -21,6 +21,7 @@
     lastSync: store.get("lastSync", null),
     busy: false, error: "", deferred: false,
     mode: "month", ym: null, cat: "", q: "", limit: 150,
+    page: 0, wm: null,                         // page: 0 Budget, 1 Wealth; wm: month picked on Wealth
   };
   const save = () => { store.set("snapshot", S.snapshot); store.set("pending", S.pending); store.set("lastSync", S.lastSync); };
 
@@ -83,6 +84,7 @@
 
   /* ---------- setup (first start) ---------- */
   function renderSetup(message) {
+    document.body.classList.remove("paged");
     const fromLink = (location.hash.match(/#setup=([\w-]+)/) || [])[1] || "";
     const inBrowser = fromLink && !standalone();
     app.innerHTML = `<div class="setup">
@@ -174,26 +176,42 @@
     const tot = BT.monthTotals(all, scope);
     const title = !ms.length ? "No data yet" : scope ? monthTitle(scope) : "All months";
 
-    app.innerHTML = `
+    const pagesEl = document.getElementById("pages");
+    const tops = pagesEl ? [...pagesEl.querySelectorAll(".page")].map(p => p.scrollTop) : [0, 0];
+    document.body.classList.add("paged");
+    app.innerHTML = `<div class="pages" id="pages"><section class="page">
       <header class="top">
+        ${tabs()}
         <div class="top-row">
           ${scope ? `<button class="nav" data-act="prev" ${i <= 0 ? "disabled" : ""}>‹</button>` : ""}
           <button class="title" data-act="picker">${h(title)} ▾</button>
           ${scope ? `<button class="nav" data-act="next" ${i >= ms.length - 1 ? "disabled" : ""}>›</button>` : ""}
           <span class="spacer"></span>
-          <button class="syncpill" data-act="syncinfo" id="pill"></button>
+          <button class="syncpill" data-act="syncinfo"></button>
         </div>
         <div class="seg"><button data-act="mode" data-v="month" class="${S.mode === "month" ? "on" : ""}">Month</button><button data-act="mode" data-v="all" class="${S.mode === "all" ? "on" : ""}">All months</button></div>
       </header>
       <main>
         ${heroCard(tot, scope, ms.length)}
-        ${balancesCard(scope || ms[ms.length - 1])}
         ${categoriesCard(all, scope)}
         <section class="card"><h2>Payments<span class="hint" id="count"></span></h2>
           <div class="search"><input id="q" type="search" placeholder="Search place or description" value="${h(S.q)}" autocomplete="off"></div>
           <div id="paylist"></div></section>
-      </main>
-      <button class="fab" data-act="cash">+ Cash</button>`;
+      </main></section>
+      <section class="page">
+        <header class="top">${tabs()}
+          <div class="top-row"><span class="title" style="cursor:default">Wealth</span><span class="spacer"></span>
+          <button class="syncpill" data-act="syncinfo"></button></div></header>
+        <main>${wealthPage()}</main>
+      </section></div>
+      <button class="fab ${S.page ? "hidden" : ""}" data-act="cash" id="fab">+ Cash</button>`;
+    const pages = document.getElementById("pages");
+    pages.scrollLeft = S.page * pages.clientWidth;
+    pages.querySelectorAll(".page").forEach((p, k) => { p.scrollTop = tops[k] || 0; });
+    pages.addEventListener("scroll", () => {
+      const k = Math.round(pages.scrollLeft / Math.max(1, pages.clientWidth));
+      if (k !== S.page) { S.page = k; markTabs(); }
+    }, { passive: true });
     pill();
     renderPayments();
     document.getElementById("q").addEventListener("input", e => { S.q = e.target.value; S.limit = 150; renderPayments(); });
@@ -213,6 +231,105 @@
       <div class="flow">${flow}</div>
       <div class="legend">${legend.map(([n, v, c]) => `<div><i style="background:${c}"></i>${n}<b>${BT.money(v)}</b></div>`).join("")}</div>
     </section>`;
+  }
+
+  function tabs() {
+    return `<div class="tabs"><button data-act="page" data-v="0" class="${S.page === 0 ? "on" : ""}">Budget</button>` +
+      `<button data-act="page" data-v="1" class="${S.page === 1 ? "on" : ""}">Wealth</button></div>`;
+  }
+  function markTabs() {
+    document.querySelectorAll(".tabs button").forEach(b => b.classList.toggle("on", Number(b.dataset.v) === S.page));
+    const fab = document.getElementById("fab"); if (fab) fab.classList.toggle("hidden", S.page !== 0);
+  }
+
+  const ACCOUNT_COLORS = { Swedbank: "#1E5A4F", Revolut: "#4FA3A5", Cash: "#E3A33B", Savings: "#2F7FA0", Investments: "#7A5CC0" };
+  const accColor = a => ACCOUNT_COLORS[a] || "#8AA8A1";
+
+  function wealthSeries() {
+    const b = S.snapshot && S.snapshot.balances;
+    const ms = b && b.months ? Object.keys(b.months).sort() : [];
+    let prev = null;
+    return ms.map(m => {
+      const { row, accounts } = BT.balancesFor(S.snapshot, S.pending, m);
+      const known = accounts.filter(a => row[a] != null);
+      const total = known.length ? Math.round(known.reduce((s, a) => s + row[a], 0) * 100) / 100 : null;
+      let change = null;
+      if (prev) {
+        const common = known.filter(a => prev[a] != null);
+        if (common.length) change = Math.round(common.reduce((s, a) => s + row[a] - prev[a], 0) * 100) / 100;
+      }
+      prev = row;
+      return { m, row, accounts, total, change };
+    });
+  }
+
+  function niceStep(span) {
+    if (span <= 0) return 1;
+    const raw = span / 4, mag = Math.pow(10, Math.floor(Math.log10(raw)));
+    return [1, 2, 2.5, 5, 10].map(f => f * mag).find(s => s >= raw);
+  }
+
+  function wealthChart(series, sel) {
+    const W = 340, H = 190, L = 44, R = 6, T = 8, B = 22;
+    const pos = series.map(s => s.accounts.reduce((a, k) => a + Math.max(s.row[k] || 0, 0), 0));
+    const neg = series.map(s => s.accounts.reduce((a, k) => a + Math.min(s.row[k] || 0, 0), 0));
+    const step = niceStep(Math.max(...pos, 0) - Math.min(...neg, 0));
+    const top = Math.max(step, Math.ceil(Math.max(...pos, 0) / step) * step), bottom = Math.floor(Math.min(...neg, 0) / step) * step;
+    const y = v => T + (top - v) / (top - bottom) * (H - T - B);
+    const slot = (W - L - R) / series.length, bw = Math.min(26, slot * 0.62);
+    const every = Math.max(1, Math.ceil(series.length / 7));
+    const fmt = v => Math.abs(top) >= 10000 || Math.abs(bottom) >= 10000 ? `€${Math.round(v / 1000)}k` : `€${Math.round(v)}`;
+    let svg = "";
+    for (let v = bottom; v <= top + step / 2; v += step) {
+      svg += `<line x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}" stroke="${Math.abs(v) < 1e-9 ? "#B9C5C1" : "#DCE3E0"}" stroke-width="1"/>`;
+      svg += `<text x="${L - 6}" y="${y(v) + 4}" text-anchor="end">${fmt(v)}</text>`;
+    }
+    series.forEach((s, i) => {
+      const x0 = L + slot * i, x = x0 + (slot - bw) / 2;
+      if (s.m === sel) svg += `<rect x="${x0}" y="${T}" width="${slot}" height="${H - T - B}" fill="#EEF4F1" rx="6"/>`;
+      let up = 0, down = 0;
+      for (const a of s.accounts) {
+        const v = s.row[a]; if (!v) continue;
+        const [y0, y1] = v > 0 ? [y(up), y(up + v)] : [y(down + v), y(down)];
+        if (v > 0) up += v; else down += v;
+        svg += `<rect x="${x}" y="${Math.min(y0, y1)}" width="${bw}" height="${Math.abs(y1 - y0)}" fill="${accColor(a)}"/>`;
+      }
+      if (i % every === 0 || i === series.length - 1) svg += `<text x="${x0 + slot / 2}" y="${H - 6}" text-anchor="middle">${MON[Number(s.m.slice(5)) - 1]}</text>`;
+      svg += `<rect x="${x0}" y="0" width="${slot}" height="${H}" fill="transparent" data-act="wm" data-v="${s.m}"/>`;
+    });
+    return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Net worth by month">${svg}</svg>`;
+  }
+
+  function wealthPage() {
+    const series = wealthSeries();
+    if (!series.length) return `<section class="card"><div class="empty">No balances yet. They arrive with the next sync from the Windows app.</div></section>`;
+    if (!S.wm || !series.some(s => s.m === S.wm)) S.wm = series[series.length - 1].m;
+    const k = series.findIndex(s => s.m === S.wm), cur = series[k], prev = series[k - 1];
+    const since = series.slice(0, k + 1).reduce((a, s) => a + (s.change || 0), 0);
+    const first = series.find(s => s.total != null);
+    const positive = cur.accounts.filter(a => (cur.row[a] || 0) > 0);
+    const posTotal = positive.reduce((s, a) => s + cur.row[a], 0) || 1;
+    const missing = cur.accounts.filter(a => cur.row[a] == null);
+    return `<section class="card">
+        <div class="cap">Net worth at the end of ${monthTitle(cur.m)}</div>
+        <div class="big ${cur.total < 0 ? "neg" : ""}">${cur.total == null ? "—" : BT.money(cur.total)}</div>
+        <div class="hero-row" style="margin-top:12px">
+          <div><div class="cap">This month</div><div class="mid ${cur.change < 0 ? "neg" : "pos"}">${cur.change == null ? "—" : BT.money(cur.change, true)}</div></div>
+          <div style="text-align:right"><div class="cap">Since ${first ? monthTitle(first.m) : "start"}</div><div class="mid ${since < 0 ? "neg" : "pos"}">${BT.money(since, true)}</div></div>
+        </div>
+        <div class="flow">${positive.map(a => `<span style="flex:${cur.row[a] / posTotal};background:${accColor(a)}"></span>`).join("")}</div>
+      </section>
+      <section class="card"><h2>Over time<span class="hint">Tap a month</span></h2>${wealthChart(series, cur.m)}</section>
+      <section class="card"><h2>Accounts<span class="hint">end of ${MONTHS[Number(cur.m.slice(5)) - 1]}</span></h2>
+        ${cur.accounts.map(a => {
+          const v = cur.row[a], p = prev && prev.row[a], d = v != null && p != null ? v - p : null;
+          return `<div class="acct"><i style="background:${accColor(a)}"></i><div class="main"><div class="place">${h(a)}</div>
+            <div class="sub">${v == null ? "not set" : `${Math.round(Math.max(v, 0) / posTotal * 100)}% of your money`}</div></div>
+            <div style="text-align:right"><div class="amt">${v == null ? "—" : BT.money(v)}</div>
+            ${d == null || Math.abs(d) < 0.005 ? "" : `<div class="sub ${d < 0 ? "negtext" : "postext"}">${BT.money(d, true)}</div>`}</div></div>`;
+        }).join("")}
+        ${missing.length ? `<p class="help">${h(missing.join(", "))}: set them in the Windows app → Wealth → Set balances. Banks come from your statements by themselves.</p>` : ""}
+      </section>`;
   }
 
   function balancesCard(ym) {
@@ -259,11 +376,11 @@
   }
 
   function pill() {
-    const p = document.getElementById("pill"); if (!p) return;
+    const pills = document.querySelectorAll(".syncpill"); if (!pills.length) return;
     const n = S.pending.length;
     const [cls, text] = S.busy ? ["busy", "Syncing"] : S.error ? ["bad", "Offline"] : n ? ["wait", `${n} waiting`]
       : S.lastSync ? ["ok", "Synced"] : ["", "Sync"];
-    p.innerHTML = `<span class="dot ${cls}"></span>${text}`;
+    pills.forEach(p => { p.innerHTML = `<span class="dot ${cls}"></span>${text}`; });
   }
 
   /* ---------- actions ---------- */
@@ -282,6 +399,9 @@
       case "pay": { const t = shown[Number(el.dataset.v)]; if (t) (BT.isCash(t) ? cashSheet(t) : categorySheet(t)); break; }
       case "cash": cashSheet(null); break;
       case "syncinfo": syncSheet(); break;
+      case "page": { const p = document.getElementById("pages"); S.page = Number(el.dataset.v); markTabs();
+        p.scrollTo({ left: S.page * p.clientWidth, behavior: "smooth" }); break; }
+      case "wm": S.wm = el.dataset.v; render(); break;
     }
   });
 
