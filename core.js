@@ -143,6 +143,25 @@ const BT = (() => {
     return [...by.entries()].filter(([, v]) => v > 0.004).sort((a, b) => b[1] - a[1]);
   }
 
+  /* Money in each account at the end of a month (from Windows), with cash you added here since. */
+  function balancesFor(snapshot, pending, ym) {
+    const b = snapshot && snapshot.balances;
+    if (!b || !b.months || !b.months[ym]) return null;
+    const row = { ...b.months[ym] };
+    if (row.Cash != null) {
+      const txns = (snapshot.transactions || []);
+      for (const c of pending || []) {
+        if (c.op === "add_cash" && c.tx.d.slice(0, 7) <= ym) row.Cash += c.tx.a;
+        if (c.op === "delete_cash") {
+          const t = txns.find(x => sameKey(x.k, c.key));
+          if (t && t.d.slice(0, 7) <= ym) row.Cash -= t.a;
+        }
+      }
+      row.Cash = Math.round(row.Cash * 100) / 100;
+    }
+    return { accounts: b.accounts.filter(a => a in row), row };
+  }
+
   function months(txns) {
     return [...new Set(txns.map(monthOf))].sort();
   }
@@ -177,7 +196,7 @@ const BT = (() => {
   }
 
   return { b64, encrypt, decrypt, WrongPassphrase, parseSetup, GitHub, GROUP_OF, GROUP_ORDER, newId,
-    viewTransactions, monthTotals, spendingByCategory, months, money, parseAmount, isCash, sameKey, sync,
+    viewTransactions, monthTotals, spendingByCategory, balancesFor, months, money, parseAmount, isCash, sameKey, sync,
     BUDGET_FILE, PHONE_FILE };
 })();
 
