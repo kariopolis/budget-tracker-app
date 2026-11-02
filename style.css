@@ -10,7 +10,29 @@
 html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
 html, body { margin: 0; background: var(--bg); color: var(--ink);
   font: 16px/1.35 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif; }
-body { padding-bottom: calc(96px + var(--safe-bottom)); overscroll-behavior-y: contain; }
+body { overscroll-behavior-y: contain; }
+body.paged { overflow: hidden; height: 100vh; height: 100dvh; }
+
+/* two pages side by side: swipe left for Wealth */
+.pages { display: flex; height: 100vh; height: 100dvh; overflow-x: auto; overflow-y: hidden; scroll-snap-type: x mandatory;
+  scrollbar-width: none; overscroll-behavior-x: contain; }
+.pages::-webkit-scrollbar { display: none; }
+.page { flex: 0 0 100%; width: 100%; height: 100%; overflow-y: auto; overflow-x: hidden; scroll-snap-align: start;
+  scroll-snap-stop: always; padding-bottom: calc(96px + var(--safe-bottom)); overscroll-behavior-y: contain; }
+.tabs { display: flex; gap: 22px; margin: 0 2px 6px; }
+.tabs button { background: none; border: 0; padding: 4px 0; font-size: 15px; font-weight: 650; color: var(--muted);
+  border-bottom: 2px solid transparent; }
+.tabs button.on { color: var(--spruce); border-bottom-color: var(--spruce); }
+.fab.hidden { display: none; }
+.mid { font-size: 20px; font-weight: 700; } .mid.pos, .postext { color: var(--left); } .mid.neg, .negtext { color: var(--neg); }
+.chart { width: 100%; height: auto; display: block; }
+.chart text { font-size: 10px; fill: var(--muted); font-family: inherit; }
+.acct { display: flex; align-items: center; gap: 12px; padding: 11px 0; border-top: 1px solid var(--line); }
+.acct:first-of-type { border-top: 0; }
+.acct i { width: 12px; height: 12px; border-radius: 6px; flex: none; }
+.acct .main { flex: 1; min-width: 0; } .acct .place { font-size: 16px; } .acct .sub { font-size: 13px; color: var(--muted); }
+.acct .sub.postext { color: var(--left); } .acct .sub.negtext { color: var(--neg); }
+.acct .amt { font-weight: 600; font-size: 16px; }
 button { font: inherit; color: inherit; cursor: pointer; }
 input, textarea { font: inherit; color: var(--ink); }
 
