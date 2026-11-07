@@ -64,7 +64,9 @@ const BT = (() => {
   class GitHub {
     constructor(token, api = API) { this.token = token; this.api = api; }
     async call(method, path, body) {
-      const r = await fetch(path.startsWith("http") ? path : this.api + path, {
+      let url = path.startsWith("http") ? path : this.api + path;
+      if (method === "GET") url += (url.includes("?") ? "&" : "?") + "_=" + Date.now();   // never an old copy
+      const r = await fetch(url, {
         method, cache: "no-store",
         headers: { Authorization: "Bearer " + this.token, Accept: "application/vnd.github+json",
           ...(body ? { "Content-Type": "application/json" } : {}) },
@@ -159,7 +161,13 @@ const BT = (() => {
       }
       row.Cash = Math.round(row.Cash * 100) / 100;
     }
-    return { accounts: b.accounts.filter(a => a in row), row };
+    // values you entered here and Windows hasn't applied yet: from their month on
+    for (const c of pending || []) {
+      if (c.op !== "set_balance" || c.d.slice(0, 7) > ym) continue;
+      const base = b.months[c.d.slice(0, 7)] && b.months[c.d.slice(0, 7)][c.account];
+      row[c.account] = Math.round(((row[c.account] == null || base == null ? c.value : row[c.account] + c.value - base)) * 100) / 100;
+    }
+    return { accounts: b.accounts.filter(a => a in row), row, market: (b.market && b.market[ym]) || {} };
   }
 
   function months(txns) {
