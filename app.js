@@ -19,7 +19,7 @@
     snapshot: store.get("snapshot", null),    // last data from the Windows app
     pending: store.get("pending", []),        // changes made here, not applied on Windows yet
     lastSync: store.get("lastSync", null),
-    busy: false, error: "", deferred: false,
+    busy: false, error: "", errStatus: 0, deferred: false,
     mode: "month", ym: null, cat: "", q: "", limit: 150,
     page: 0, wm: null,                         // page: 0 Budget, 1 Wealth; wm: month picked on Wealth
   };
@@ -100,7 +100,7 @@
         <p class="help" style="margin:0 0 10px">Code not filled in on the Home Screen app? Tap Copy setup code here, then Paste setup code there.</p>
         <button class="btn" style="width:100%" id="copy">Copy setup code</button></div>
         <p class="cap">Or use it right here in the browser:</p>` : `<p class="cap" style="margin-top:14px">In the Windows app: Settings → Show QR code (Quick Response code). Open it in Safari, tap Copy setup code, then paste it here.</p>`}
-      ${!fromLink ? `<button class="btn primary" style="width:100%;margin-bottom:14px" id="paste">Paste setup code</button>` : ""}
+      ${!inBrowser ? `<button class="btn ${fromLink ? "" : "primary"}" style="width:100%;margin-bottom:14px" id="paste">Paste setup code</button>` : ""}
       <div class="field"><label class="label" for="code">Setup code</label>
         <textarea class="input" id="code" placeholder="Paste the setup code" autocapitalize="off" autocorrect="off" spellcheck="false">${h(fromLink)}</textarea></div>
       <div class="field"><label class="label" for="pass">Passphrase</label>
@@ -128,6 +128,67 @@
     document.getElementById("go").onclick = connect;
   }
 
+  /* ---------- a new setup code (new GitHub token on Windows): keeps the passphrase and your changes ---------- */
+  const linkCode = () => (location.hash.match(/#setup=([\w-]+)/) || [])[1] || "";
+  function markSeen(code) {
+    if (!code) return;
+    const seen = store.get("seenCodes", []);
+    if (!seen.includes(code)) store.set("seenCodes", seen.concat(code).slice(-20));
+  }
+  function checkLinkCode() {                     // opened from a new QR code while already set up
+    const code = linkCode();
+    if (!code || !S.creds || store.get("seenCodes", []).includes(code)) return;
+    let s; try { s = BT.parseSetup(code); } catch (e) { return; }
+    if (s.token === S.creds.token && s.gist === S.creds.gist) { markSeen(code); return; }
+    newCodeSheet(code);
+  }
+  function newCodeSheet(prefill) {
+    const fromLink = !!prefill;
+    openSheet(`<h3>New setup code</h3>
+      <p class="subtitle">${fromLink ? "This link has a new setup code from the Windows app." :
+        "After a new GitHub token in the Windows app: press Show QR code again there, open the QR code in Safari, tap Copy setup code, then Paste here."}
+        Your passphrase and changes stay.</p>
+      ${fromLink ? "" : `<button class="btn primary" style="width:100%;margin-bottom:12px" data-a="paste">Paste setup code</button>`}
+      <div class="field"><textarea class="input" id="newcode" placeholder="Setup code" autocapitalize="off" autocorrect="off" spellcheck="false">${h(prefill || "")}</textarea></div>
+      <p class="error" id="newerr"></p>
+      <div class="buttons">${fromLink && !standalone() ? `<button class="btn" data-a="copy">Copy for Home Screen app</button>` : `<button class="btn" data-a="no">Cancel</button>`}
+        <button class="btn primary" data-a="use">Use this code</button></div>`, sh => {
+      const box = sh.querySelector("#newcode"), err = sh.querySelector("#newerr");
+      sh.addEventListener("click", async e => {
+        const a = e.target.closest("[data-a]"); if (!a) return;
+        if (a.dataset.a === "no") { markSeen(prefill); closeSheet(); }
+        if (a.dataset.a === "copy") {
+          try { await navigator.clipboard.writeText(box.value.trim()); toast("Copied - in the Home Screen app: Sync → New setup code → Paste"); }
+          catch (x) { box.select(); toast("Select the code and copy it"); }
+        }
+        if (a.dataset.a === "paste") {
+          try { box.value = await navigator.clipboard.readText(); err.textContent = setupProblem(box.value); }
+          catch (x) { box.focus(); toast("Tap the box, then Paste"); }
+        }
+        if (a.dataset.a !== "use") return;
+        let setup; try { setup = BT.parseSetup(box.value); } catch (x) { err.textContent = setupProblem(box.value); return; }
+        a.disabled = true; a.textContent = "Checking...";
+        try {
+          const sent = S.pending.slice();
+          const r = await BT.sync(new BT.GitHub(setup.token), setup.gist, S.creds.pass, sent);
+          S.creds = { ...S.creds, token: setup.token, gist: setup.gist };
+          store.set("creds", S.creds);
+          markSeen(prefill); markSeen(linkCode());
+          if (r.snapshot) S.snapshot = r.snapshot;
+          S.pending = r.pending.concat(S.pending.filter(c => !sent.includes(c)));
+          S.lastSync = new Date().toISOString(); S.error = ""; S.errStatus = 0;
+          save(); closeSheet(); render(); toast("Connected with the new setup code");
+        } catch (x) {
+          a.disabled = false; a.textContent = "Use this code";
+          err.textContent = x instanceof BT.WrongPassphrase
+            ? "The passphrase was changed in the Windows app. Use Sync → Forget this phone, then set up again."
+            : x.status === 401 ? "GitHub refused this token too. Check the token in the Windows app, press Show QR code again and use the new code."
+              : x.status ? `GitHub said: ${x.message}` : "No connection to GitHub. Check the internet connection and try again.";
+        }
+      });
+    });
+  }
+
   function setupProblem(text) {
     try { BT.parseSetup(text); return ""; } catch (e) { /* explained below */ }
     const t = String(text || "").trim();
@@ -149,6 +210,7 @@
       const r = await BT.sync(new BT.GitHub(setup.token), setup.gist, pass, []);
       S.creds = { token: setup.token, gist: setup.gist, pass };
       store.set("creds", S.creds);
+      markSeen(code); markSeen(linkCode());
       S.snapshot = r.snapshot; S.pending = []; S.lastSync = new Date().toISOString(); S.error = "";
       save();
       render();
@@ -385,7 +447,8 @@
     const pc = !up ? "" : up.toDateString() === new Date().toDateString()
       ? up.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })
       : up.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
-    const [cls, text] = S.busy ? ["busy", "Syncing"] : S.error ? ["bad", "Offline"] : n ? ["wait", `${n} waiting`]
+    const [cls, text] = S.busy ? ["busy", "Syncing"] : S.error ? ["bad", S.errStatus === 401 ? "Token refused" : S.errStatus ? "Sync problem" : "Offline"]
+      : n ? ["wait", `${n} waiting`]
       : S.lastSync ? ["ok", pc ? `PC data ${pc}` : "Synced"] : ["", "Sync"];
     pills.forEach(p => { p.innerHTML = `<span class="dot ${cls}"></span>${text}`; });
   }
@@ -608,11 +671,15 @@
       <div class="info"><div>Last synced: <b>${when}</b></div><div>Data from Windows: <b>${fromWin}</b></div>
       <div>${n ? `<b>${n}</b> change${n === 1 ? "" : "s"} waiting for the Windows app (applied when it next opens or syncs)` : "No changes waiting"}</div>
       ${S.error ? `<div class="error" style="margin:8px 0 0">${h(S.error)}</div>` : ""}</div>
-      <div class="buttons"><button class="btn primary" data-a="sync">Sync now</button></div>
-      <div class="buttons"><button class="btn danger" data-a="forget">Forget this phone</button></div>`, sh => {
+      <div class="buttons">${S.errStatus === 401 ? `<button class="btn primary" data-a="newcode">New setup code</button>`
+        : `<button class="btn primary" data-a="sync">Sync now</button>`}</div>
+      <div class="buttons">${S.errStatus === 401 ? `<button class="btn" data-a="sync">Sync now</button>`
+        : `<button class="btn" data-a="newcode">New setup code</button>`}
+        <button class="btn danger" data-a="forget">Forget this phone</button></div>`, sh => {
       sh.addEventListener("click", async e => {
         const a = e.target.closest("[data-a]"); if (!a) return;
         if (a.dataset.a === "sync") { closeSheet(); await syncNow(); if (!S.error) toast("Synced"); }
+        if (a.dataset.a === "newcode") newCodeSheet("");
         if (a.dataset.a === "forget" && await confirmSheet("Forget this phone?",
           (n ? `${n} change${n === 1 ? "" : "s"} not synced yet will be lost. ` : "") + "Your data stays on Windows and GitHub; set up again with the QR code.", "Forget", true)) {
           store.clear(); Object.assign(S, { creds: null, snapshot: null, pending: [], lastSync: null, error: "" }); render();
@@ -641,15 +708,15 @@
       }
       const added = S.pending.filter(c => !sent.includes(c));   // made while this sync was running
       S.pending = r.pending.map(c => S.pending.find(x => x.id === c.id) || c).concat(added);
-      S.lastSync = new Date().toISOString(); S.error = "";
+      S.lastSync = new Date().toISOString(); S.error = ""; S.errStatus = 0;
       save();
       S.busy = false;
       if (editing() || sheetRoot.firstChild) { S.deferred = true; pill(); } else render();
       if (added.length) setTimeout(syncNow, 500);
     } catch (e) {
-      S.busy = false;
+      S.busy = false; S.errStatus = e.status || 0;
       S.error = e instanceof BT.WrongPassphrase ? "The passphrase doesn't match the data any more (changed in the Windows app?). Forget this phone and set it up again."
-        : e.status === 401 ? "GitHub refused the access token. Set up again from the Windows app."
+        : e.status === 401 ? "GitHub refused the access token: it expired or was replaced, so nothing syncs. In the Windows app: Settings → paste a new token (Expiration: No expiration) → Show QR code again. Then tap New setup code here."
           : (e.message && e.status ? e.message : "Offline - your changes are kept and sent when you're online.");
       pill();
     }
@@ -666,5 +733,6 @@
 
   if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
   render();
+  checkLinkCode();
   syncNow();
 })();
