@@ -40,10 +40,10 @@
     return c ? c[1] : (amount > 0 ? "Income" : "Expense");
   };
   const standalone = () => window.navigator.standalone === true || window.matchMedia("(display-mode: standalone)").matches;
-  function toast(text) {
+  function toast(text, ms) {
     const t = document.createElement("div");
     t.className = "toast"; t.textContent = text; document.body.appendChild(t);
-    setTimeout(() => t.remove(), 2600);
+    setTimeout(() => t.remove(), ms || 2600);
   }
   const editing = () => document.activeElement && /INPUT|TEXTAREA/.test(document.activeElement.tagName);
 
@@ -254,6 +254,7 @@
         <div class="seg"><button data-act="mode" data-v="month" class="${S.mode === "month" ? "on" : ""}">Month</button><button data-act="mode" data-v="all" class="${S.mode === "all" ? "on" : ""}">All months</button></div>
       </header>
       <main>
+        ${statementsCard()}
         ${heroCard(tot, scope, ms.length)}
         ${categoriesCard(all, scope)}
         <section class="card"><h2>Payments<span class="hint" id="count"></span></h2>
@@ -266,7 +267,8 @@
           <button class="syncpill" data-act="syncinfo"></button></div></header>
         <main>${wealthPage()}</main>
       </section></div>
-      <button class="fab ${S.page ? "hidden" : ""}" data-act="cash" id="fab">+ Cash</button>`;
+      <div class="fabs ${S.page ? "hidden" : ""}" id="fab"><button class="fab light" data-act="pdf">Statement</button>
+        <button class="fab" data-act="cash">+ Cash</button></div>`;
     const pages = document.getElementById("pages");
     pages.scrollLeft = S.page * pages.clientWidth;
     pages.querySelectorAll(".page").forEach((p, k) => { p.scrollTop = tops[k] || 0; });
@@ -468,6 +470,8 @@
       case "more": S.limit += 150; renderPayments(); break;
       case "pay": { const t = shown[Number(el.dataset.v)]; if (t) (BT.isCash(t) ? cashSheet(t) : categorySheet(t)); break; }
       case "cash": cashSheet(null); break;
+      case "pdf": pickStatements(); break;
+      case "unpdf": cancelStatement(el.dataset.v); break;
       case "syncinfo": syncSheet(); break;
       case "page": { const p = document.getElementById("pages"); S.page = Number(el.dataset.v); markTabs();
         p.scrollTo({ left: S.page * p.clientWidth, behavior: "smooth" }); break; }
@@ -550,6 +554,50 @@
       S.pending.push({ id: BT.newId(), at: new Date().toISOString(), op: "edit", key: t.k, category: cat, type });
     }
     changed(`${t.p}: ${cat}`);
+  }
+
+  /* ---------- statements uploaded here: the Windows app imports them on its next sync ---------- */
+  const MAX_PDF = 4 * 1024 * 1024;
+  function pickStatements() {
+    const input = document.createElement("input");
+    input.type = "file"; input.accept = "application/pdf,.pdf"; input.multiple = true; input.style.display = "none";
+    document.body.appendChild(input);
+    input.onchange = async () => {
+      const notes = []; let n = 0;
+      for (const f of [...input.files]) {
+        const name = f.name || "statement.pdf";
+        if (S.pending.some(c => c.op === "import_pdf" && c.name === name && c.size === f.size)) { notes.push(`${name} is already waiting`); continue; }
+        if (f.size > MAX_PDF) { notes.push(`${name} is too big (over 4 MB)`); continue; }
+        const bytes = new Uint8Array(await f.arrayBuffer());
+        if (String.fromCharCode(...bytes.subarray(0, 5)) !== "%PDF-") { notes.push(`${name} is not a PDF`); continue; }
+        S.pending.push({ id: BT.newId(), at: new Date().toISOString(), op: "import_pdf", name, size: f.size, data: BT.b64.to(bytes) });
+        n++;
+      }
+      input.remove();
+      if (n) { save(); render(); syncNow(); }
+      toast(notes.length ? notes.join(" · ") : `Sent - the Windows app imports ${n > 1 ? "them" : "it"} on its next sync`);
+    };
+    input.click();
+  }
+  function statementsCard() {
+    const waiting = S.pending.filter(c => c.op === "import_pdf");
+    if (!waiting.length) return "";
+    return `<section class="card stmts"><h2>Statements waiting</h2>
+      ${waiting.map(c => `<button class="stmt" data-act="unpdf" data-v="${h(c.id)}"><span class="ico">PDF</span>
+        <span class="nm">${h(c.name)}</span><span class="hint">Cancel</span></button>`).join("")}
+      <p class="help">The Windows app imports them on its next sync. It has to be open - it syncs on start and every 5 minutes.</p></section>`;
+  }
+  async function cancelStatement(id) {
+    const c = S.pending.find(x => x.id === id); if (!c) return;
+    if (!await confirmSheet("Cancel this statement?", `${c.name} won't be imported.`, "Cancel it", true)) return;
+    S.pending = S.pending.filter(x => x.id !== id);
+    save(); render(); syncNow();
+  }
+  function statementResults(sent, r) {             // statements Windows imported in this sync: say how it went
+    const done = sent.filter(c => c.op === "import_pdf" && !r.pending.some(x => x.id === c.id));
+    const told = ((r.snapshot && r.snapshot.imports) || []);
+    const lines = done.map(c => { const x = told.find(i => i.id === c.id); return x && x.text ? `${c.name}: ${x.text}` : ""; }).filter(Boolean);
+    if (lines.length) toast(lines.join(" · "), 6000);
   }
 
   function cashSheet(t) {
@@ -667,10 +715,13 @@
     const when = S.lastSync ? new Date(S.lastSync).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : "never";
     const fromWin = S.snapshot && S.snapshot.updated ? new Date(S.snapshot.updated).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : "nothing yet";
     const n = S.pending.length;
+    const imports = ((S.snapshot && S.snapshot.imports) || []).slice(-3).reverse();
     openSheet(`<h3>Sync</h3><p class="subtitle">Your data is encrypted with your passphrase before it leaves the phone.</p>
       <div class="info"><div>Last synced: <b>${when}</b></div><div>Data from Windows: <b>${fromWin}</b></div>
       <div>${n ? `<b>${n}</b> change${n === 1 ? "" : "s"} waiting for the Windows app (applied when it next opens or syncs)` : "No changes waiting"}</div>
       ${S.error ? `<div class="error" style="margin:8px 0 0">${h(S.error)}</div>` : ""}</div>
+      ${imports.length ? `<div class="info"><div><b>Statements from this phone</b></div>${imports.map(x =>
+        `<div class="help" style="margin-top:6px">${h(x.name)}: ${h(x.text)}</div>`).join("")}</div>` : ""}
       <div class="buttons">${S.errStatus === 401 ? `<button class="btn primary" data-a="newcode">New setup code</button>`
         : `<button class="btn primary" data-a="sync">Sync now</button>`}</div>
       <div class="buttons">${S.errStatus === 401 ? `<button class="btn" data-a="sync">Sync now</button>`
@@ -707,6 +758,7 @@
         if (!S.ym || S.ym === oldM) { if (S.ym !== newM) S.cat = ""; S.ym = newM; }
         if (!S.wm || S.wm === oldW) S.wm = newW;
       }
+      statementResults(sent, r);
       const added = S.pending.filter(c => !sent.includes(c));   // made while this sync was running
       S.pending = r.pending.map(c => S.pending.find(x => x.id === c.id) || c).concat(added);
       S.lastSync = new Date().toISOString(); S.error = ""; S.errStatus = 0;
