@@ -575,9 +575,17 @@
       }
       input.remove();
       if (n) { save(); render(); syncNow(); }
-      toast(notes.length ? notes.join(" · ") : `Sent - the Windows app imports ${n > 1 ? "them" : "it"} on its next sync`);
+      toast(notes.length ? notes.join(" · ") : `Sent - your PC imports ${n > 1 ? "them" : "it"} within 5 minutes`);
     };
     input.click();
+  }
+  /* why your changes haven't reached Excel yet (from the Windows app), or what to check */
+  function waitingNote(list) {
+    const w = S.snapshot && S.snapshot.waiting;
+    if (w && w.reason && list.some(c => (w.ids || []).includes(c.id))) return `The Windows app got ${list.length > 1 ? "them" : "it"}, but ${w.reason}.`;
+    const up = S.snapshot && S.snapshot.updated ? new Date(S.snapshot.updated) : null;
+    const last = up ? ` It last sent data ${up.toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}.` : "";
+    return `Not picked up yet - your PC syncs every 5 minutes while it is on (the app window doesn't have to be open).${last}`;
   }
   function statementsCard() {
     const waiting = S.pending.filter(c => c.op === "import_pdf");
@@ -585,7 +593,7 @@
     return `<section class="card stmts"><h2>Statements waiting</h2>
       ${waiting.map(c => `<button class="stmt" data-act="unpdf" data-v="${h(c.id)}"><span class="ico">PDF</span>
         <span class="nm">${h(c.name)}</span><span class="hint">Cancel</span></button>`).join("")}
-      <p class="help">The Windows app imports them on its next sync. It has to be open - it syncs on start and every 5 minutes.</p></section>`;
+      <p class="help">${h(waitingNote(waiting))}</p></section>`;
   }
   async function cancelStatement(id) {
     const c = S.pending.find(x => x.id === id); if (!c) return;
@@ -596,7 +604,8 @@
   function statementResults(sent, r) {             // statements Windows imported in this sync: say how it went
     const done = sent.filter(c => c.op === "import_pdf" && !r.pending.some(x => x.id === c.id));
     const told = ((r.snapshot && r.snapshot.imports) || []);
-    const lines = done.map(c => { const x = told.find(i => i.id === c.id); return x && x.text ? `${c.name}: ${x.text}` : ""; }).filter(Boolean);
+    const lines = done.map(c => { const x = told.find(i => i.id === c.id);
+      return `${c.name}: ${x && x.text ? x.text : "not imported - the Windows app is an older version. Restart it and upload the statement again."}`; });
     if (lines.length) toast(lines.join(" · "), 6000);
   }
 
@@ -718,7 +727,7 @@
     const imports = ((S.snapshot && S.snapshot.imports) || []).slice(-3).reverse();
     openSheet(`<h3>Sync</h3><p class="subtitle">Your data is encrypted with your passphrase before it leaves the phone.</p>
       <div class="info"><div>Last synced: <b>${when}</b></div><div>Data from Windows: <b>${fromWin}</b></div>
-      <div>${n ? `<b>${n}</b> change${n === 1 ? "" : "s"} waiting for the Windows app (applied when it next opens or syncs)` : "No changes waiting"}</div>
+      <div>${n ? `<b>${n}</b> change${n === 1 ? "" : "s"} waiting. ${h(waitingNote(S.pending))}` : "No changes waiting"}</div>
       ${S.error ? `<div class="error" style="margin:8px 0 0">${h(S.error)}</div>` : ""}</div>
       ${imports.length ? `<div class="info"><div><b>Statements from this phone</b></div>${imports.map(x =>
         `<div class="help" style="margin-top:6px">${h(x.name)}: ${h(x.text)}</div>`).join("")}</div>` : ""}
