@@ -1,6 +1,6 @@
 /* Offline support: the app's own files come from the network when possible (so updates arrive),
    otherwise from the copy saved on the phone. GitHub data calls are never cached here. */
-const CACHE = "budget-v6";
+const CACHE = "budget-v7";
 const FILES = ["./", "index.html", "style.css", "core.js", "app.js", "manifest.webmanifest",
   "icon-180.png", "icon-192.png", "icon-512.png"];
 
