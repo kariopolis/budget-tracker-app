@@ -259,7 +259,7 @@
         if (common.length) change = Math.round(common.reduce((s, a) => s + row[a] - prev[a], 0) * 100) / 100;
       }
       prev = row;
-      return { m, row, accounts, total, change };
+      return { m, row, accounts, total, change, market: BT.balancesFor(S.snapshot, S.pending, m).market };
     });
   }
 
@@ -323,12 +323,14 @@
       <section class="card"><h2>Accounts<span class="hint">end of ${MONTHS[Number(cur.m.slice(5)) - 1]}</span></h2>
         ${cur.accounts.map(a => {
           const v = cur.row[a], p = prev && prev.row[a], d = v != null && p != null ? v - p : null;
-          return `<div class="acct"><i style="background:${accColor(a)}"></i><div class="main"><div class="place">${h(a)}</div>
-            <div class="sub">${v == null ? "not set" : `${Math.round(Math.max(v, 0) / posTotal * 100)}% of your money`}</div></div>
+          const mk = cur.market && cur.market[a];
+          const editable = ["Cash", "Savings", "Investments"].includes(a);
+          return `<div class="acct" ${editable ? `data-act="value" data-v="${h(a)}"` : ""}><i style="background:${accColor(a)}"></i><div class="main"><div class="place">${h(a)}${editable ? ` <span class="edit">Update</span>` : ""}</div>
+            <div class="sub">${v == null ? "not set - tap to set" : `${Math.round(Math.max(v, 0) / posTotal * 100)}% of your money`}${mk ? ` · market ${BT.money(mk, true)}` : ""}</div></div>
             <div style="text-align:right"><div class="amt">${v == null ? "—" : BT.money(v)}</div>
             ${d == null || Math.abs(d) < 0.005 ? "" : `<div class="sub ${d < 0 ? "negtext" : "postext"}">${BT.money(d, true)}</div>`}</div></div>`;
         }).join("")}
-        ${missing.length ? `<p class="help">${h(missing.join(", "))}: set them in the Windows app → Wealth → Set balances. Banks come from your statements by themselves.</p>` : ""}
+        <p class="help">Banks come from your statements by themselves. Tap cash, savings or investments to enter today's value - e.g. after the market moved.</p>
       </section>`;
   }
 
@@ -378,8 +380,13 @@
   function pill() {
     const pills = document.querySelectorAll(".syncpill"); if (!pills.length) return;
     const n = S.pending.length;
+    // when the Windows app last sent new data: tells at a glance whether a new statement has arrived
+    const up = S.snapshot && S.snapshot.updated ? new Date(S.snapshot.updated) : null;
+    const pc = !up ? "" : up.toDateString() === new Date().toDateString()
+      ? up.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })
+      : up.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
     const [cls, text] = S.busy ? ["busy", "Syncing"] : S.error ? ["bad", "Offline"] : n ? ["wait", `${n} waiting`]
-      : S.lastSync ? ["ok", "Synced"] : ["", "Sync"];
+      : S.lastSync ? ["ok", pc ? `PC data ${pc}` : "Synced"] : ["", "Sync"];
     pills.forEach(p => { p.innerHTML = `<span class="dot ${cls}"></span>${text}`; });
   }
 
@@ -402,6 +409,7 @@
       case "page": { const p = document.getElementById("pages"); S.page = Number(el.dataset.v); markTabs();
         p.scrollTo({ left: S.page * p.clientWidth, behavior: "smooth" }); break; }
       case "wm": S.wm = el.dataset.v; render(); break;
+      case "value": valueSheet(el.dataset.v); break;
     }
   });
 
@@ -551,6 +559,37 @@
     });
   }
 
+  function valueSheet(acct) {
+    const series = wealthSeries();
+    const now = series.length ? series[series.length - 1].row[acct] : null;
+    const help = { Cash: "Count your wallet. Cash payments you add move it from then on.",
+      Savings: "All savings accounts together, e.g. after interest was paid.",
+      Investments: "The value in your broker's app now. Money you put in or take out is counted by itself; the rest shows as market change." }[acct];
+    openSheet(`<h3>Update ${h(acct)}</h3><p class="subtitle">${h(help)}</p>
+      <div class="info"><div class="cap">Now in the app</div><div class="big">${now == null ? "—" : BT.money(now)}</div></div>
+      <div class="row2">
+        <div class="field"><label class="label" for="val">Value, €</label><input class="input" id="val" inputmode="decimal" placeholder="0.00"></div>
+        <div class="field"><label class="label" for="vday">Date</label><input class="input" id="vday" type="date" value="${isoDay(new Date())}"></div>
+      </div>
+      <p class="error" id="err"></p>
+      <div class="buttons"><button class="btn" data-a="cancel">Cancel</button><button class="btn primary" data-a="save">Save</button></div>`, sh => {
+      setTimeout(() => sh.querySelector("#val").focus(), 250);
+      sh.addEventListener("click", e => {
+        const a = e.target.closest("[data-a]"); if (!a) return;
+        if (a.dataset.a === "cancel") return closeSheet();
+        const raw = sh.querySelector("#val").value.trim();
+        const v = /^\s*[-−]/.test(raw) ? -BT.parseAmount(raw.replace(/[-−]/, "")) : (raw.replace(/[€\s]/g, "") === "0" ? 0 : BT.parseAmount(raw));
+        const d = sh.querySelector("#vday").value;
+        if (v == null || Number.isNaN(v)) { sh.querySelector("#err").textContent = "Type the value, e.g. 1250.00"; return; }
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) { sh.querySelector("#err").textContent = "Pick a date."; return; }
+        S.pending = S.pending.filter(c => !(c.op === "set_balance" && c.account === acct && c.d === d));
+        S.pending.push({ id: BT.newId(), at: new Date().toISOString(), op: "set_balance", account: acct, d, value: v });
+        closeSheet();
+        changed(`${acct}: ${BT.money(v)}`);
+      });
+    });
+  }
+
   function deleteCash(t) {
     if (t.k[0] === "pending") S.pending = S.pending.filter(c => c.id !== t.k[1]);
     else S.pending.push({ id: BT.newId(), at: new Date().toISOString(), op: "delete_cash", key: t.k });
@@ -590,7 +629,16 @@
     const sent = S.pending.slice();
     try {
       const r = await BT.sync(new BT.GitHub(S.creds.token), S.creds.gist, S.creds.pass, sent);
-      if (r.snapshot) S.snapshot = r.snapshot;
+      if (r.snapshot) {
+        // If you were looking at the latest month, follow it to the new latest month (a new statement adds one).
+        const latest = () => { const ms = BT.months(allTxns()), ws = wealthSeries();
+          return [ms[ms.length - 1] || null, ws.length ? ws[ws.length - 1].m : null]; };
+        const [oldM, oldW] = latest();
+        S.snapshot = r.snapshot;
+        const [newM, newW] = latest();
+        if (!S.ym || S.ym === oldM) { if (S.ym !== newM) S.cat = ""; S.ym = newM; }
+        if (!S.wm || S.wm === oldW) S.wm = newW;
+      }
       const added = S.pending.filter(c => !sent.includes(c));   // made while this sync was running
       S.pending = r.pending.map(c => S.pending.find(x => x.id === c.id) || c).concat(added);
       S.lastSync = new Date().toISOString(); S.error = "";
