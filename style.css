@@ -33,6 +33,9 @@ body.paged { overflow: hidden; height: 100vh; height: 100dvh; }
 .acct .main { flex: 1; min-width: 0; } .acct .place { font-size: 16px; } .acct .sub { font-size: 13px; color: var(--muted); }
 .acct .sub.postext { color: var(--left); } .acct .sub.negtext { color: var(--neg); }
 .acct .amt { font-weight: 600; font-size: 16px; }
+.acct[data-act] { cursor: pointer; }
+.acct .edit { font-size: 12px; font-weight: 600; color: var(--spruce); background: var(--tint); border-radius: 6px;
+  padding: 1px 7px; margin-left: 6px; vertical-align: 2px; }
 button { font: inherit; color: inherit; cursor: pointer; }
 input, textarea { font: inherit; color: var(--ink); }
 
