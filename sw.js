@@ -1,7 +1,7 @@
 /* Offline support: the app's own files come from the network when possible (so updates arrive),
    otherwise from the copy saved on the phone. GitHub data calls are never cached here. */
-const CACHE = "budget-v11";
-const FILES = ["./", "index.html", "style.css", "core.js", "app.js", "manifest.webmanifest",
+const CACHE = "budget-v12";
+const FILES = ["./", "index.html", "style.css", "core.js", "app.js", "pyworker.js", "manifest.webmanifest",
   "icon-180.png", "icon-192.png", "icon-512.png"];
 
 self.addEventListener("install", e => {
