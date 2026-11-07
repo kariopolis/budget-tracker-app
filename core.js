@@ -109,10 +109,27 @@ const BT = (() => {
   const sameKey = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
   /* Payments as the phone shows them: the last data from Windows + your changes not applied there yet. */
+  /* A statement's payments that aren't in `txns` yet - the same rule as Windows: per payment (key), as many as the
+     statement has, minus the ones already there (overlapping statements add only what's new). */
+  function newRows(txns, rows) {
+    const have = new Map();
+    for (const t of txns) { const k = JSON.stringify(t.k); have.set(k, (have.get(k) || 0) + 1); }
+    const by = new Map();
+    for (const r of rows) { const k = JSON.stringify(r.k); if (!by.has(k)) by.set(k, []); by.get(k).push(r); }
+    const out = [];
+    for (const [k, same] of by) out.push(...same.slice(0, Math.max(0, same.length - (have.get(k) || 0))));
+    return out;
+  }
+
   function viewTransactions(snapshot, pending) {
     let txns = (snapshot && snapshot.transactions ? snapshot.transactions : []).map(t => ({ ...t }));
     for (const c of pending || []) {
-      if (c.op === "add_cash") {
+      if (c.op === "import_txns") {                 // a statement read on this phone, not stored on Windows yet
+        for (const x of newRows(txns, c.txns || [])) {
+          txns.push({ k: x.k, d: x.d, p: x.p || String(x.s).slice(0, 40), s: x.s, a: x.a, c: x.c || "Other",
+            t: x.t || (x.a > 0 ? "Income" : "Expense"), b: c.bank, n: "", pending: true, change: c.id });
+        }
+      } else if (c.op === "add_cash") {
         const x = c.tx;
         txns.push({ k: ["pending", c.id], d: x.d, p: x.s || x.c, s: x.s || x.c, a: x.a, c: x.c, t: x.t, b: "Cash",
           n: "Entered by hand", pending: true, change: c.id });
@@ -222,7 +239,7 @@ const BT = (() => {
   }
 
   return { b64, encrypt, decrypt, WrongPassphrase, parseSetup, GitHub, GROUP_OF, GROUP_ORDER, newId,
-    viewTransactions, monthTotals, spendingByCategory, balancesFor, months, money, parseAmount, isCash, sameKey, sync,
+    viewTransactions, newRows, monthTotals, spendingByCategory, balancesFor, months, money, parseAmount, isCash, sameKey, sync,
     BUDGET_FILE, PHONE_FILE };
 })();
 
