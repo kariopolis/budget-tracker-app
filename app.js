@@ -19,7 +19,7 @@
     snapshot: store.get("snapshot", null),    // last data from the Windows app
     pending: store.get("pending", []),        // changes made here, not applied on Windows yet
     lastSync: store.get("lastSync", null),
-    busy: false, error: "", errStatus: 0, deferred: false,
+    busy: false, error: "", errStatus: 0, deferred: false, reading: null, readStep: "",
     mode: "month", ym: null, cat: "", q: "", limit: 150,
     page: 0, wm: null,                         // page: 0 Budget, 1 Wealth; wm: month picked on Wealth
   };
@@ -169,13 +169,13 @@
         let setup; try { setup = BT.parseSetup(box.value); } catch (x) { err.textContent = setupProblem(box.value); return; }
         a.disabled = true; a.textContent = "Checking...";
         try {
-          const sent = S.pending.slice();
+          const sent = JSON.parse(JSON.stringify(S.pending));
           const r = await BT.sync(new BT.GitHub(setup.token), setup.gist, S.creds.pass, sent);
           S.creds = { ...S.creds, token: r.token || setup.token, gist: setup.gist };
           store.set("creds", S.creds);
           markSeen(prefill); markSeen(linkCode());
           if (r.snapshot) S.snapshot = r.snapshot;
-          S.pending = r.pending.concat(S.pending.filter(c => !sent.includes(c)));
+          if (mergePending(sent, r)) setTimeout(syncNow, 500);
           S.lastSync = new Date().toISOString(); S.error = ""; S.errStatus = 0;
           save(); closeSheet(); render(); toast("Connected with the new setup code");
         } catch (x) {
@@ -556,30 +556,94 @@
     changed(`${t.p}: ${cat}`);
   }
 
-  /* ---------- statements uploaded here: the Windows app imports them on its next sync ---------- */
+  /* ---------- statements: read on this phone (pyworker.js, the Windows app's own Python code), so their payments
+     show at once; Windows stores them (and rebuilds Excel) at its next sync. A statement this phone can't read
+     is sent to Windows as the PDF. ---------- */
   const MAX_PDF = 4 * 1024 * 1024;
+  let worker = null, jobs = 0;
+  const waits = new Map();
+  function reader() {
+    if (worker) return worker;
+    try { worker = new Worker("pyworker.js"); } catch (e) { return null; }
+    worker.onmessage = e => {
+      const m = e.data, w = waits.get(m.id); if (!w) return;
+      if (m.progress) { w.progress(m.progress); return; }
+      waits.delete(m.id); clearTimeout(w.timer);
+      if (m.error) w.reject(new Error(m.error)); else w.resolve(m.result);
+    };
+    worker.onerror = e => {
+      for (const w of waits.values()) { clearTimeout(w.timer); w.reject(new Error(e.message || "the reader stopped")); }
+      waits.clear(); worker = null;
+    };
+    return worker;
+  }
+  function ask(msg, progress, ms, transfer) {
+    const w = reader(); if (!w) return Promise.reject(new Error("this browser can't run the reader"));
+    const id = ++jobs;
+    return new Promise((resolve, reject) => {
+      const timer = ms ? setTimeout(() => { waits.delete(id); reject(new Error("it took too long")); }, ms) : 0;
+      waits.set(id, { resolve, reject, progress: progress || (() => {}), timer });
+      w.postMessage({ id, ...msg }, transfer || []);
+    });
+  }
+  const latestNow = () => { const ms = BT.months(allTxns()), ws = wealthSeries(); return [ms[ms.length - 1] || null, ws.length ? ws[ws.length - 1].m : null]; };
+  function followLatest([oldM, oldW]) {             // you were on the latest month: go to the new latest one
+    const [newM, newW] = latestNow();
+    if (!S.ym || S.ym === oldM) { if (S.ym !== newM) S.cat = ""; S.ym = newM; }
+    if (!S.wm || S.wm === oldW) S.wm = newW;
+  }
+  function readingStep(text) {
+    S.readStep = text;
+    const el = document.getElementById("readstep");
+    if (el) el.textContent = text; else render();
+  }
   function pickStatements() {
+    ask({ op: "warm" }).catch(() => {});             // Python starts while you pick the file
     const input = document.createElement("input");
     input.type = "file"; input.accept = "application/pdf,.pdf"; input.multiple = true; input.style.display = "none";
     document.body.appendChild(input);
     input.onchange = async () => {
-      const notes = []; let n = 0;
-      for (const f of [...input.files]) {
+      const files = [...input.files]; input.remove();
+      const notes = [], mark = latestNow(); let changedAny = false;
+      for (const f of files) {
         const name = f.name || "statement.pdf";
-        if (S.pending.some(c => c.op === "import_pdf" && c.name === name && c.size === f.size)) { notes.push(`${name} is already waiting`); continue; }
+        if (S.pending.some(c => (c.op === "import_pdf" || c.op === "import_txns") && c.name === name && c.size === f.size)) { notes.push(`${name} is already waiting`); continue; }
         if (f.size > MAX_PDF) { notes.push(`${name} is too big (over 4 MB)`); continue; }
         const bytes = new Uint8Array(await f.arrayBuffer());
         if (String.fromCharCode(...bytes.subarray(0, 5)) !== "%PDF-") { notes.push(`${name} is not a PDF`); continue; }
-        S.pending.push({ id: BT.newId(), at: new Date().toISOString(), op: "import_pdf", name, size: f.size, data: BT.b64.to(bytes) });
-        n++;
+        S.reading = name; readingStep("Reading...");
+        const snap = S.snapshot || {};
+        let r = null, why = "";
+        try {
+          r = await ask({ op: "read", name, data: bytes.slice().buffer, rules: snap.rules || [], settings: snap.rule_settings || {} },
+            readingStep, 120000);
+        } catch (e) { why = e.message || String(e); }
+        if (r && r.txns && r.txns.length) {
+          const fresh = BT.newRows(allTxns(), r.txns);
+          if (!fresh.length) { notes.push(`${name}: ${r.bank}, nothing new - it was already imported`); continue; }
+          S.pending.push({ id: BT.newId(), at: new Date().toISOString(), op: "import_txns", name, size: f.size, bank: r.bank,
+            ok: r.ok, why: r.why, added: fresh.length, data: BT.b64.to(bytes),
+            txns: r.txns.map(t => ({ k: t.k, d: t.d, s: t.s, a: t.a, bal: t.bal, p: t.p, c: t.c, t: t.t })) });
+          changedAny = true;
+          notes.push(`${name}: ${r.bank}, ${fresh.length} new payment${fresh.length === 1 ? "" : "s"}` +
+            (r.ok === true ? ", adds up to the statement ✓" : r.ok === false ? ` - ⚠ they don't add up to the statement (${r.why}): a page may be missing` : ""));
+        } else if (r) {
+          notes.push(`${name}: no payments found - is it a Swedbank or Revolut statement?`);
+        } else {                                      // couldn't read it here: Windows reads the PDF
+          S.pending.push({ id: BT.newId(), at: new Date().toISOString(), op: "import_pdf", name, size: f.size, data: BT.b64.to(bytes) });
+          changedAny = true;
+          notes.push(`${name}: couldn't be read on this phone (${why}) - sent to your PC, it imports it within 5 minutes`);
+        }
       }
-      input.remove();
-      if (n) { save(); render(); syncNow(); }
-      toast(notes.length ? notes.join(" · ") : `Sent - your PC imports ${n > 1 ? "them" : "it"} within 5 minutes`);
+      S.reading = null;
+      if (changedAny) { followLatest(mark); save(); }
+      render();
+      if (changedAny) syncNow();
+      if (notes.length) toast(notes.join(" · "), 6000);
     };
     input.click();
   }
-  /* why your changes haven't reached Excel yet (from the Windows app), or what to check */
+  /* why your changes haven't reached Windows yet (from the Windows app), or what to check */
   function waitingNote(list) {
     const w = S.snapshot && S.snapshot.waiting;
     if (w && w.reason && list.some(c => (w.ids || []).includes(c.id))) return `The Windows app got ${list.length > 1 ? "them" : "it"}, but ${w.reason}.`;
@@ -588,24 +652,33 @@
     return `Not picked up yet - your PC syncs every 5 minutes while it is on (the app window doesn't have to be open).${last}`;
   }
   function statementsCard() {
-    const waiting = S.pending.filter(c => c.op === "import_pdf");
-    if (!waiting.length) return "";
-    return `<section class="card stmts"><h2>Statements waiting</h2>
-      ${waiting.map(c => `<button class="stmt" data-act="unpdf" data-v="${h(c.id)}"><span class="ico">PDF</span>
-        <span class="nm">${h(c.name)}</span><span class="hint">Cancel</span></button>`).join("")}
-      <p class="help">${h(waitingNote(waiting))}</p></section>`;
+    const list = S.pending.filter(c => c.op === "import_pdf" || c.op === "import_txns");
+    if (!list.length && !S.reading) return "";
+    const read = list.filter(c => c.op === "import_txns"), pdfs = list.filter(c => c.op === "import_pdf");
+    const help = [];
+    if (read.length) help.push(`Their payments are in the list already (marked "not synced"). Your PC stores them and updates Excel at its next sync - ${h(waitingNote(read)).replace(/^Not picked up yet - /, "")}`);
+    if (pdfs.length) help.push(h(waitingNote(pdfs)));
+    return `<section class="card stmts"><h2>Statements</h2>
+      ${S.reading ? `<div class="stmt"><span class="ico">PDF</span><span class="nm">${h(S.reading)}</span><span class="hint" id="readstep">${h(S.readStep || "")}</span></div>` : ""}
+      ${list.map(c => `<button class="stmt" data-act="unpdf" data-v="${h(c.id)}"><span class="ico">PDF</span>
+        <span class="nm">${h(c.name)}${c.op === "import_txns" ? `<span class="sub">${h(c.bank)} · ${c.added} new payment${c.added === 1 ? "" : "s"}${c.ok === false ? " · ⚠ doesn't add up" : ""}</span>`
+          : `<span class="sub">waiting for your PC to read it</span>`}</span><span class="hint">Cancel</span></button>`).join("")}
+      ${help.map(x => `<p class="help">${x}</p>`).join("")}</section>`;
   }
   async function cancelStatement(id) {
     const c = S.pending.find(x => x.id === id); if (!c) return;
-    if (!await confirmSheet("Cancel this statement?", `${c.name} won't be imported.`, "Cancel it", true)) return;
+    if (!await confirmSheet("Cancel this statement?", `${c.name} won't be imported${c.op === "import_txns" ? " - its payments disappear from this phone" : ""}.`, "Cancel it", true)) return;
     S.pending = S.pending.filter(x => x.id !== id);
     save(); render(); syncNow();
   }
-  function statementResults(sent, r) {             // statements Windows imported in this sync: say how it went
-    const done = sent.filter(c => c.op === "import_pdf" && !r.pending.some(x => x.id === c.id));
+  function statementResults(sent, r) {             // statements Windows took in this sync: say how it went
+    const done = sent.filter(c => (c.op === "import_pdf" || c.op === "import_txns") && !r.pending.some(x => x.id === c.id));
     const told = ((r.snapshot && r.snapshot.imports) || []);
-    const lines = done.map(c => { const x = told.find(i => i.id === c.id);
-      return `${c.name}: ${x && x.text ? x.text : "not imported - the Windows app is an older version. Restart it and upload the statement again."}`; });
+    const lines = done.map(c => {
+      const x = told.find(i => i.id === c.id);
+      if (c.op === "import_txns" && x && x.text && !x.text.startsWith("Not imported")) return null;   // said when it was read
+      return `${c.name}: ${x && x.text ? x.text : "not imported - the Windows app is an older version. Update it and upload the statement again."}`;
+    }).filter(Boolean);
     if (lines.length) toast(lines.join(" · "), 6000);
   }
 
@@ -749,32 +822,35 @@
   }
 
   /* ---------- sync ---------- */
+  /* After a sync: drop the changes Windows applied, keep what was added, cancelled or changed while it ran.
+     Returns true when the phone's list differs from what was just uploaded (then it syncs again). */
+  function mergePending(sent, r) {
+    const sentIds = new Set(sent.map(c => c.id)), left = new Set(r.pending.map(c => c.id));
+    S.pending = S.pending.filter(c => !sentIds.has(c.id) || left.has(c.id));
+    const uploaded = sent.filter(c => left.has(c.id));
+    return JSON.stringify(uploaded) !== JSON.stringify(S.pending);
+  }
   async function syncNow() {
     if (!S.creds || S.busy) { pill(); return; }
     if (!navigator.onLine) { S.error = "Offline - your changes are kept and sent when you're online."; pill(); return; }
     S.busy = true; pill();
-    const sent = S.pending.slice();
+    const sent = JSON.parse(JSON.stringify(S.pending));       // as uploaded (edits made meanwhile are noticed)
     try {
       const r = await BT.sync(new BT.GitHub(S.creds.token), S.creds.gist, S.creds.pass, sent);
       if (r.token) { S.creds = { ...S.creds, token: r.token }; store.set("creds", S.creds); toast("New GitHub token picked up from Windows"); }
       if (r.snapshot) {
         // If you were looking at the latest month, follow it to the new latest month (a new statement adds one).
-        const latest = () => { const ms = BT.months(allTxns()), ws = wealthSeries();
-          return [ms[ms.length - 1] || null, ws.length ? ws[ws.length - 1].m : null]; };
-        const [oldM, oldW] = latest();
+        const mark = latestNow();
         S.snapshot = r.snapshot;
-        const [newM, newW] = latest();
-        if (!S.ym || S.ym === oldM) { if (S.ym !== newM) S.cat = ""; S.ym = newM; }
-        if (!S.wm || S.wm === oldW) S.wm = newW;
+        followLatest(mark);
       }
       statementResults(sent, r);
-      const added = S.pending.filter(c => !sent.includes(c));   // made while this sync was running
-      S.pending = r.pending.map(c => S.pending.find(x => x.id === c.id) || c).concat(added);
+      const again = mergePending(sent, r);              // made / cancelled while this sync was running
       S.lastSync = new Date().toISOString(); S.error = ""; S.errStatus = 0;
       save();
       S.busy = false;
       if (editing() || sheetRoot.firstChild) { S.deferred = true; pill(); } else render();
-      if (added.length) setTimeout(syncNow, 500);
+      if (again) setTimeout(syncNow, 500);
     } catch (e) {
       S.busy = false; S.errStatus = e.status || 0;
       S.error = e instanceof BT.WrongPassphrase ? "The passphrase doesn't match the data any more (changed in the Windows app?). Forget this phone and set it up again."
