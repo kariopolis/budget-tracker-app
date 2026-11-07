@@ -123,6 +123,8 @@ main { padding: 4px 16px 0; display: flex; flex-direction: column; gap: 14px; }
 .stmt:first-of-type { border-top: 0; }
 .stmt .ico { flex: none; font-size: 10px; font-weight: 700; color: #fff; background: var(--neg); border-radius: 5px; padding: 4px 5px; }
 .stmt .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.stmt .nm .sub { display: block; font-size: 13px; color: var(--muted); }
+#readstep { color: var(--muted); }
 
 /* bottom sheets (the phone's pop-up windows - one style for all) */
 .backdrop { position: fixed; inset: 0; z-index: 20; background: rgba(22, 33, 30, .35); display: flex; align-items: flex-end;
