@@ -49,7 +49,7 @@ input, textarea { font: inherit; color: var(--ink); }
 .title:active { color: var(--spruce); }
 .spacer { flex: 1; }
 .syncpill { display: flex; align-items: center; gap: 6px; background: var(--surface); border: 1px solid var(--line);
-  border-radius: 999px; padding: 6px 11px; font-size: 13px; color: var(--muted); }
+  border-radius: 999px; padding: 6px 11px; font-size: 13px; color: var(--muted); white-space: nowrap; flex: none; }
 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--other); }
 .dot.ok { background: var(--left); } .dot.wait { background: var(--spent); } .dot.bad { background: var(--neg); }
 .dot.busy { background: var(--spruce); animation: pulse 1s infinite alternate; }
@@ -113,6 +113,16 @@ main { padding: 4px 16px 0; display: flex; flex-direction: column; gap: 14px; }
   color: #fff; border: 0; border-radius: 999px; padding: 15px 22px; font-weight: 650; font-size: 16px;
   box-shadow: 0 6px 20px rgba(30, 90, 79, .35); }
 .fab:active { background: var(--spruce-dark); }
+.fabs { position: fixed; right: 18px; bottom: calc(18px + var(--safe-bottom)); z-index: 6; display: flex; gap: 10px; }
+.fabs.hidden { display: none; }
+.fabs .fab { position: static; }
+.fab.light { background: var(--surface); color: var(--spruce); border: 1px solid var(--line); box-shadow: 0 6px 20px rgba(22, 33, 30, .18); }
+.fab.light:active { background: var(--line); }
+.stmt { display: flex; align-items: center; gap: 12px; width: 100%; background: none; border: 0; border-top: 1px solid var(--line);
+  padding: 11px 0; color: inherit; font: inherit; text-align: left; }
+.stmt:first-of-type { border-top: 0; }
+.stmt .ico { flex: none; font-size: 10px; font-weight: 700; color: #fff; background: var(--neg); border-radius: 5px; padding: 4px 5px; }
+.stmt .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* bottom sheets (the phone's pop-up windows - one style for all) */
 .backdrop { position: fixed; inset: 0; z-index: 20; background: rgba(22, 33, 30, .35); display: flex; align-items: flex-end;
