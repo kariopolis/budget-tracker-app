@@ -9,6 +9,7 @@ const BT = (() => {
   const API = "https://api.github.com";
   const BUDGET_FILE = "budget.enc";
   const PHONE_FILE = "phone.enc";
+  const TOKEN_FILE = "token.enc";        // the Windows app's GitHub token, encrypted with your passphrase
   const ITERATIONS = 200000;
 
   const b64 = {
@@ -68,7 +69,7 @@ const BT = (() => {
       if (method === "GET") url += (url.includes("?") ? "&" : "?") + "_=" + Date.now();   // never an old copy
       const r = await fetch(url, {
         method, cache: "no-store",
-        headers: { Authorization: "Bearer " + this.token, Accept: "application/vnd.github+json",
+        headers: { ...(this.token ? { Authorization: "Bearer " + this.token } : {}), Accept: "application/vnd.github+json",
           ...(body ? { "Content-Type": "application/json" } : {}) },
         body: body ? JSON.stringify(body) : undefined,
       });
@@ -188,9 +189,26 @@ const BT = (() => {
     return Number.isFinite(v) && v > 0 ? v : null;
   }
 
-  /* One sync round: read what Windows wrote, drop changes it has applied, upload the rest. */
+  /* Token refused (replaced on Windows): the secret gist can be read without a token, and the Windows app
+     leaves its current token there, encrypted with your passphrase. */
+  async function newToken(gist, passphrase, api) {
+    const files = await new GitHub("", api).readFiles(gist);
+    const box = await decrypt(files[TOKEN_FILE] || "", passphrase);
+    return box && box.t;
+  }
+
+  /* One sync round: read what Windows wrote, drop changes it has applied, upload the rest.
+     token = a new token picked up from Windows (keep it), else null. */
   async function sync(gh, gist, passphrase, pending) {
-    const files = await gh.readFiles(gist);
+    let files, token = null;
+    try { files = await gh.readFiles(gist); } catch (e) {
+      if (e.status !== 401) throw e;
+      let t = null;
+      try { t = await newToken(gist, passphrase, gh.api); } catch (x) { /* nothing usable there */ }
+      if (!t || t === gh.token) throw e;
+      gh = new GitHub(t, gh.api); token = t;
+      files = await gh.readFiles(gist);
+    }
     const snapshot = await decrypt(files[BUDGET_FILE] || "", passphrase);
     const applied = new Set((snapshot && snapshot.applied) || []);
     const left = pending.filter(c => !applied.has(c.id));
@@ -200,7 +218,7 @@ const BT = (() => {
     if (onGitHub !== JSON.stringify(left)) {
       await gh.writeFile(gist, PHONE_FILE, await encrypt({ v: 1, changes: left }, passphrase));
     }
-    return { snapshot, pending: left };
+    return { snapshot, pending: left, token };
   }
 
   return { b64, encrypt, decrypt, WrongPassphrase, parseSetup, GitHub, GROUP_OF, GROUP_ORDER, newId,
