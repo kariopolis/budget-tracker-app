@@ -171,7 +171,7 @@
         try {
           const sent = S.pending.slice();
           const r = await BT.sync(new BT.GitHub(setup.token), setup.gist, S.creds.pass, sent);
-          S.creds = { ...S.creds, token: setup.token, gist: setup.gist };
+          S.creds = { ...S.creds, token: r.token || setup.token, gist: setup.gist };
           store.set("creds", S.creds);
           markSeen(prefill); markSeen(linkCode());
           if (r.snapshot) S.snapshot = r.snapshot;
@@ -208,7 +208,7 @@
     btn.disabled = true; btn.textContent = "Connecting...";
     try {
       const r = await BT.sync(new BT.GitHub(setup.token), setup.gist, pass, []);
-      S.creds = { token: setup.token, gist: setup.gist, pass };
+      S.creds = { token: r.token || setup.token, gist: setup.gist, pass };
       store.set("creds", S.creds);
       markSeen(code); markSeen(linkCode());
       S.snapshot = r.snapshot; S.pending = []; S.lastSync = new Date().toISOString(); S.error = "";
@@ -696,6 +696,7 @@
     const sent = S.pending.slice();
     try {
       const r = await BT.sync(new BT.GitHub(S.creds.token), S.creds.gist, S.creds.pass, sent);
+      if (r.token) { S.creds = { ...S.creds, token: r.token }; store.set("creds", S.creds); toast("New GitHub token picked up from Windows"); }
       if (r.snapshot) {
         // If you were looking at the latest month, follow it to the new latest month (a new statement adds one).
         const latest = () => { const ms = BT.months(allTxns()), ws = wealthSeries();
