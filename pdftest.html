@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Statement reader test</title>
+<style>
+  :root { --bg: #EEF1F0; --surface: #FFFFFF; --ink: #16211E; --muted: #6A7773; --line: #DCE3E0; --spruce: #1E5A4F;
+          --neg: #C0392B; --pos: #3E9B5F; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #111715; --surface: #1A2220; --ink: #E7EEEB; --muted: #94A39E; --line: #2A3532; --spruce: #5FB39F; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 16px/1.45 -apple-system, "Segoe UI", sans-serif;
+         padding: calc(env(safe-area-inset-top) + 16px) 16px calc(env(safe-area-inset-bottom) + 24px); }
+  h1 { font-size: 22px; margin: 4px 0 6px; }
+  p { margin: 0 0 14px; color: var(--muted); }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 16px; padding: 16px; margin: 0 0 14px; }
+  button { width: 100%; font: inherit; font-weight: 600; color: #fff; background: var(--spruce); border: 0;
+           border-radius: 12px; padding: 14px; }
+  button:disabled { opacity: .5; }
+  .row { display: flex; justify-content: space-between; gap: 12px; padding: 7px 0; border-top: 1px solid var(--line); }
+  .row:first-child { border-top: 0; }
+  .row span:first-child { color: var(--muted); }
+  .ok { color: var(--pos); font-weight: 600; } .bad { color: var(--neg); font-weight: 600; }
+  .tx { display: grid; grid-template-columns: 58px 1fr auto; gap: 8px; padding: 6px 0; border-top: 1px solid var(--line);
+        font-size: 14px; }
+  .tx .p { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tx .a { font-variant-numeric: tabular-nums; }
+  #log { font-size: 14px; color: var(--muted); white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<h1>Statement reader test</h1>
+<p>Reads a Swedbank or Revolut PDF on this phone with the Windows app's own code. Nothing is uploaded or saved.
+The first time downloads about 10–15 MB; after that it's quicker.</p>
+<div class="card"><button id="pick">Choose a statement PDF</button></div>
+<div class="card" id="status" hidden><div id="log"></div></div>
+<div class="card" id="result" hidden></div>
+<div class="card" id="rows" hidden></div>
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const money = v => (v < 0 ? "−" : "+") + "€" + Math.abs(v).toFixed(2);
+let worker = null, started = 0;
+
+function log(text) { $("status").hidden = false; $("log").textContent += text + "\n"; }
+
+$("pick").onclick = () => {
+  const input = document.createElement("input");
+  input.type = "file"; input.accept = "application/pdf,.pdf"; input.style.display = "none";
+  document.body.appendChild(input);
+  input.onchange = async () => {
+    const f = input.files[0]; input.remove();
+    if (!f) return;
+    $("pick").disabled = true; $("result").hidden = $("rows").hidden = true; $("log").textContent = "";
+    log(`${f.name}, ${(f.size / 1024).toFixed(0)} KB`);
+    started = performance.now();
+    worker = worker || new Worker("pyworker.js");
+    const data = await f.arrayBuffer();
+    worker.onmessage = e => {
+      const m = e.data;
+      if (m.progress) { log(`${((performance.now() - started) / 1000).toFixed(1)} s  ${m.progress}`); return; }
+      $("pick").disabled = false;
+      if (m.error) { log("Error: " + m.error); return; }
+      const r = m.result, total = (performance.now() - started) / 1000;
+      log(`${total.toFixed(1)} s  done`);
+      const sum = r.txns.reduce((s, t) => s + t.a, 0);
+      $("result").hidden = false;
+      $("result").innerHTML = [
+        ["Bank", esc(r.bank)], ["Payments read", r.txns.length],
+        ["Checked against the statement's totals", r.ok === true ? "<span class='ok'>adds up ✓</span>"
+          : r.ok === false ? `<span class='bad'>doesn't add up</span>` : "no totals printed"],
+        ["Total of the payments", money(sum)],
+        ["Python start", r.bootSeconds ? r.bootSeconds.toFixed(1) + " s" : "already running"],
+        ["Reading the PDF", r.readSeconds.toFixed(1) + " s"], ["Pyodide version", esc(r.version)],
+      ].map(([k, v]) => `<div class="row"><span>${k}</span><span>${v}</span></div>`).join("")
+        + (r.ok === false ? `<p style="margin:8px 0 0">${esc(r.why)}</p>` : "")
+        + (r.warnings.length ? `<p style="margin:8px 0 0">${esc(r.warnings.join("; "))}</p>` : "");
+      $("rows").hidden = !r.txns.length;
+      $("rows").innerHTML = r.txns.slice(0, 20).map(t =>
+        `<div class="tx"><span>${esc(t.d.slice(5))}</span><span class="p">${esc(t.p)}</span>` +
+        `<span class="a">${money(t.a)}</span></div>`).join("") +
+        (r.txns.length > 20 ? `<p style="margin:8px 0 0">…and ${r.txns.length - 20} more</p>` : "");
+    };
+    worker.onerror = e => { $("pick").disabled = false; log("Error: " + (e.message || "the reader stopped")); };
+    worker.postMessage({ id: 1, name: f.name, data }, [data]);
+  };
+  input.click();
+};
+</script>
+</body>
+</html>
